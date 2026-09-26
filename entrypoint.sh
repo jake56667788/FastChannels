@@ -1,3 +1,4 @@
+```bash
 #!/bin/bash
 set -e
 
@@ -20,8 +21,9 @@ redis-server \
 
 echo "✅ Redis started"
 
-# Wait for Redis to be ready before proceeding
+# Wait for Redis to be ready before proceeding.
 echo "⏳ Waiting for Redis..."
+
 for i in $(seq 1 30); do
     if redis-cli ping > /dev/null 2>&1; then
         echo "✅ Redis ready"
@@ -36,17 +38,27 @@ for i in $(seq 1 30); do
     sleep 0.5
 done
 
-# Ensure the default SQLite data directory exists before app startup.
-mkdir -p /data
+# /data is created and made writable by the Dockerfile.
+# Do not mkdir /data here because Blitz runs the container as a non-root user.
+
+if [ ! -d /data ]; then
+    echo "❌ /data does not exist"
+    exit 1
+fi
+
+if [ ! -w /data ]; then
+    echo "❌ /data exists but is not writable"
+    ls -ld /data || true
+    exit 1
+fi
+
+echo "✅ /data is writable"
 
 # One-time cleanup: the legacy watch-M3U output was replaced by the PrismCast
-# hybrid feed, so its artifacts are no longer generated. Remove any orphans left
-# by older builds (harmless if absent; nothing regenerates them).
+# hybrid feed, so its artifacts are no longer generated.
 rm -f /data/cache/xml/*watch-m3u.m3u 2>/dev/null || true
 
-# Create DB tables and run schema migrations (once, before worker/gunicorn start).
-# Setting FC_SCHEMA_READY=1 tells create_app() to skip ensure_runtime_schema()
-# so the worker and gunicorn don't race each other for the SQLite write lock.
+# Create DB tables and run schema migrations before worker/gunicorn start.
 cd /app
 
 python -c "from app import create_app; app = create_app()"
@@ -57,19 +69,18 @@ export FC_SCHEMA_READY=1
 
 echo "✅ DB ready"
 
-# Seed sources
+# Seed sources.
 python -c "from app.worker import seed_sources; seed_sources()" || true
 
 echo "✅ Sources seeded"
 
-# Force-purge any source whose scraper class has been missing from the
-# registry for longer than its grace period.
+# Force-purge any source whose scraper class has been missing from the registry
+# for longer than its grace period.
 python -c "from app.worker import purge_orphaned_sources; purge_orphaned_sources()" || true
 
 echo "✅ Orphaned sources checked"
 
-# Sweep up channels/programs left behind by a disable whose purge job never
-# ran.
+# Sweep up channels/programs left behind by a disable whose purge job never ran.
 python -c "from app.worker import purge_disabled_source_leftovers; purge_disabled_source_leftovers()" || true
 
 echo "✅ Disabled-source leftovers checked"
@@ -143,11 +154,11 @@ PY
 wait_for_network
 
 # Start isolated worker roles with watchdogs.
-# Conservative design:
-# - scheduler process only enqueues work and runs periodic maintenance
-# - scraper process handles scrapes + stream audits (single concurrency)
-# - fast process handles immediate short-lived jobs
-# - maintenance process handles heavier non-urgent background jobs
+#
+# scheduler    = periodic scheduling and maintenance
+# scraper      = scraping and stream audits
+# fast         = immediate short-lived jobs
+# maintenance  = heavier non-urgent background work
 
 (
     while true; do
@@ -208,3 +219,4 @@ exec gunicorn \
         [ "$GUNICORN_PRELOAD" = "1" ] && printf '%s' "--preload"
     ) \
     "wsgi:app"
+```
