@@ -1,3 +1,4 @@
+```dockerfile
 FROM node:24-bookworm-slim AS node_runtime
 
 FROM python:3.12-slim
@@ -25,7 +26,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create FastChannels persistent directories while building as root.
-# Blitz runs the container as a non-root user at runtime.
 RUN mkdir -p /data /root/.android \
     && chmod 0777 /data \
     && chmod 0777 /root/.android
@@ -34,7 +34,6 @@ RUN mkdir -p /data /root/.android \
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node-real
 
 # yt-dlp may invoke node with --permission.
-# Add the required permissions only when --permission is requested.
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'case " $* " in' \
@@ -71,14 +70,16 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 # Camoufox for interactive Sling sign-in.
 RUN python -m camoufox fetch
 
-# Disable Redis file logging in the system configuration.
-# entrypoint.sh explicitly passes --logfile "" too.
+# Disable Redis file logging.
 RUN sed -i 's/^logfile .*/logfile ""/' /etc/redis/redis.conf
 
-# Copy the FastChannels application.
+# Copy FastChannels.
 COPY . /app/
 
-RUN chmod +x /app/entrypoint.sh
+# Normalize entrypoint.sh to Unix LF line endings.
+# This prevents Windows CRLF files from causing "exec format error".
+RUN sed -i 's/\r$//' /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh
 
 # Bundle the latest FastChannels Player release APK.
 ARG FC_PLAYER_APK_REFRESH=unset
@@ -92,10 +93,12 @@ RUN echo "fc-player APK refresh token: ${FC_PLAYER_APK_REFRESH}" \
         || (rm -f /app/fc_player_release.apk.tmp \
             && echo "FastChannels Player APK was not available — install button will report unavailable."))
 
-# Use the system CA bundle for Python requests.
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 5523
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+# Explicitly invoke Bash so the entrypoint does not depend on its shebang.
+ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]
+```
+
