@@ -3,8 +3,19 @@ set -e
 
 echo "🚀 Starting FastChannels..."
 
-# Start Redis
-redis-server --daemonize yes --logfile /var/log/redis.log --save "" --appendonly no
+# Start Redis using paths writable by the non-root application user.
+REDIS_DIR="/data/redis"
+mkdir -p "$REDIS_DIR"
+
+redis-server \
+    --daemonize yes \
+    --logfile "" \
+    --dir "$REDIS_DIR" \
+    --dbfilename "dump.rdb" \
+    --pidfile "$REDIS_DIR/redis.pid" \
+    --save "" \
+    --appendonly no
+
 echo "✅ Redis started"
 
 # Wait for Redis to be ready before proceeding
@@ -14,10 +25,12 @@ for i in $(seq 1 30); do
         echo "✅ Redis ready"
         break
     fi
+
     if [ "$i" = "30" ]; then
         echo "❌ Redis did not become ready in time"
         exit 1
     fi
+
     sleep 0.5
 done
 
@@ -33,28 +46,35 @@ rm -f /data/cache/xml/*watch-m3u.m3u 2>/dev/null || true
 # Setting FC_SCHEMA_READY=1 tells create_app() to skip ensure_runtime_schema()
 # so the worker and gunicorn don't race each other for the SQLite write lock.
 cd /app
+
 python -c "from app import create_app; app = create_app()"
+
 python /app/run_migrations.py
+
 export FC_SCHEMA_READY=1
+
 echo "✅ DB ready"
 
 # Seed sources
 python -c "from app.worker import seed_sources; seed_sources()" || true
+
 echo "✅ Sources seeded"
 
 # Force-purge any source whose scraper class has been missing from the
-# registry for longer than its grace period (see purge_orphaned_sources).
+# registry for longer than its grace period.
 python -c "from app.worker import purge_orphaned_sources; purge_orphaned_sources()" || true
+
 echo "✅ Orphaned sources checked"
 
 # Sweep up channels/programs left behind by a disable whose purge job never
-# ran (e.g. the container restarted before the queued job executed — see
-# purge_disabled_source_leftovers).
+# ran.
 python -c "from app.worker import purge_disabled_source_leftovers; purge_disabled_source_leftovers()" || true
+
 echo "✅ Disabled-source leftovers checked"
 
 wait_for_network() {
     echo "⏳ Waiting for outbound network and DNS..."
+
     for i in $(seq 1 30); do
         if python - <<'PY'
 import socket
@@ -69,28 +89,48 @@ targets = [
 
 try:
     for host, port in targets:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(
+            host,
+            port,
+            type=socket.SOCK_STREAM
+        )
+
         last_error = None
         connected = False
+
         for family, socktype, proto, _, sockaddr in infos:
             try:
-                with socket.socket(family, socktype, proto) as sock:
+                with socket.socket(
+                    family,
+                    socktype,
+                    proto
+                ) as sock:
                     sock.settimeout(3)
                     sock.connect(sockaddr)
+
                 connected = True
                 break
+
             except OSError as exc:
                 last_error = exc
+
         if not connected:
-            raise last_error or OSError(f"could not connect to {host}:{port}")
+            raise last_error or OSError(
+                f"could not connect to {host}:{port}"
+            )
+
 except Exception as exc:
-    print(f"network check failed: {exc}", file=sys.stderr)
+    print(
+        f"network check failed: {exc}",
+        file=sys.stderr
+    )
     sys.exit(1)
 PY
         then
             echo "✅ Network ready"
             return 0
         fi
+
         sleep 2
     done
 
@@ -106,26 +146,39 @@ wait_for_network
 # - scraper process handles scrapes + stream audits (single concurrency)
 # - fast process handles immediate short-lived jobs
 # - maintenance process handles heavier non-urgent background jobs
-(while true; do
-    FC_WORKER_ROLE=scheduler python -m app.worker
-    echo "⚠ Scheduler worker exited (code $?) — restarting in 5s"
-    sleep 5
-done) &
-(while true; do
-    FC_WORKER_ROLE=scraper python -m app.worker
-    echo "⚠ Scraper worker exited (code $?) — restarting in 5s"
-    sleep 5
-done) &
-(while true; do
-    FC_WORKER_ROLE=fast python -m app.worker
-    echo "⚠ Fast worker exited (code $?) — restarting in 5s"
-    sleep 5
-done) &
-(while true; do
-    FC_WORKER_ROLE=maintenance python -m app.worker
-    echo "⚠ Maintenance worker exited (code $?) — restarting in 5s"
-    sleep 5
-done) &
+
+(
+    while true; do
+        FC_WORKER_ROLE=scheduler python -m app.worker
+        echo "⚠ Scheduler worker exited (code $?) — restarting in 5s"
+        sleep 5
+    done
+) &
+
+(
+    while true; do
+        FC_WORKER_ROLE=scraper python -m app.worker
+        echo "⚠ Scraper worker exited (code $?) — restarting in 5s"
+        sleep 5
+    done
+) &
+
+(
+    while true; do
+        FC_WORKER_ROLE=fast python -m app.worker
+        echo "⚠ Fast worker exited (code $?) — restarting in 5s"
+        sleep 5
+    done
+) &
+
+(
+    while true; do
+        FC_WORKER_ROLE=maintenance python -m app.worker
+        echo "⚠ Maintenance worker exited (code $?) — restarting in 5s"
+        sleep 5
+    done
+) &
+
 echo "✅ Worker roles started (scheduler, scraper, fast, maintenance)"
 
 GUNICORN_WORKERS="${GUNICORN_WORKERS:-2}"
@@ -134,6 +187,7 @@ GUNICORN_MAX_REQUESTS_JITTER="${GUNICORN_MAX_REQUESTS_JITTER:-50}"
 GUNICORN_PRELOAD="${GUNICORN_PRELOAD:-1}"
 
 echo "✅ Starting gunicorn on port 5523"
+
 exec gunicorn \
     --config /app/gunicorn.conf.py \
     --bind 0.0.0.0:5523 \
@@ -148,5 +202,7 @@ exec gunicorn \
     --worker-tmp-dir /dev/shm \
     --access-logfile - \
     --access-logformat '%(h)s "%(r)s" %(s)s %(b)s %(T)ss' \
-    $( [ "$GUNICORN_PRELOAD" = "1" ] && printf '%s' "--preload" ) \
+    $(
+        [ "$GUNICORN_PRELOAD" = "1" ] && printf '%s' "--preload"
+    ) \
     "wsgi:app"
