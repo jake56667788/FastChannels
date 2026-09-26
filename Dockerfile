@@ -1,4 +1,3 @@
-```dockerfile
 FROM node:24-bookworm-slim AS node_runtime
 
 FROM python:3.12-slim
@@ -98,6 +97,5 @@ ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 5523
-
 ENTRYPOINT ["/app/entrypoint.sh"]
 ```
