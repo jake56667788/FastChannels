@@ -1,4 +1,3 @@
-```dockerfile
 FROM node:24-bookworm-slim AS node_runtime
 
 FROM python:3.12-slim
@@ -100,5 +99,3 @@ EXPOSE 5523
 
 # Explicitly invoke Bash so the entrypoint does not depend on its shebang.
 ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]
-```
-
