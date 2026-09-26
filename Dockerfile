@@ -1,3 +1,4 @@
+```dockerfile
 FROM node:24-bookworm-slim AS node_runtime
 
 FROM python:3.12-slim
@@ -25,14 +26,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     android-tools-adb \
     && rm -rf /var/lib/apt/lists/*
 
-# Redis runs inside the container, so send logs to stdout instead of
-# trying to write a logfile that may not be writable on hosted platforms.
-RUN sed -i 's/^logfile .*/logfile ""/' /etc/redis/redis.conf
+# Create FastChannels persistent data directories while the image is still
+# being built as root. Blitz runs the container as a non-root user at runtime.
+RUN mkdir -p /data /root/.android \
+    && chmod 0777 /data \
+    && chmod 0777 /root/.android
 
 # Node.js 24 from its official image.
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node-real
 
-# Node permission shim for yt-dlp EJS.
+# yt-dlp runs node with --permission for the EJS challenge.
+# Add the required permissions only when --permission is actually requested.
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'case " $* " in' \
@@ -45,20 +49,23 @@ RUN printf '%s\n' \
 
 COPY requirements.txt .
 
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
 
 # Keep yt-dlp at GitHub master.
 ARG YTDLP_REFRESH=unset
 
 RUN echo "yt-dlp refresh token: ${YTDLP_REFRESH}" \
     && pip install --force-reinstall \
-    "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"
+        "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"
 
-RUN playwright install-deps chromium && playwright install chromium
+RUN playwright install-deps chromium \
+    && playwright install chromium
 
 # Real Google Chrome is amd64-only.
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
-        playwright install-deps chrome && playwright install chrome; \
+        playwright install-deps chrome \
+        && playwright install chrome; \
     else \
         echo "Skipping unsupported Playwright Chrome download on $TARGETARCH"; \
     fi
@@ -66,7 +73,11 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 # Camoufox for interactive Sling sign-in.
 RUN python -m camoufox fetch
 
-COPY . .
+# Disable Redis file logging in the system configuration.
+# entrypoint.sh also explicitly passes --logfile "".
+RUN sed -i 's/^logfile .*/logfile ""/' /etc/redis/redis.conf
+
+COPY .
 
 RUN chmod +x /app/entrypoint.sh
 
@@ -74,7 +85,8 @@ RUN chmod +x /app/entrypoint.sh
 ARG FC_PLAYER_APK_REFRESH=unset
 
 RUN echo "fc-player APK refresh token: ${FC_PLAYER_APK_REFRESH}" \
-    && (curl -fsSL -o /app/fc_player_release.apk.tmp \
+    && (curl -fsSL \
+        -o /app/fc_player_release.apk.tmp \
         "https://github.com/kineticman/FastChannels/releases/latest/download/FastChannelsPlayer.apk" \
         && mv /app/fc_player_release.apk.tmp /app/fc_player_release.apk \
         && echo "Bundled FastChannels Player release APK." \
@@ -88,3 +100,4 @@ ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
 EXPOSE 5523
 
 ENTRYPOINT ["/app/entrypoint.sh"]
+```
