@@ -8,8 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Set automatically by Buildx for each target platform. It must be declared in
-# this build stage before a RUN instruction can read it.
+# Set automatically by Buildx for each target platform.
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,17 +25,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     android-tools-adb \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 24 from its official image. yt-dlp's EJS engine needs Node >= 22 to
-# solve YouTube's n-signature challenge. Copying the runtime avoids relying on
-# NodeSource's external apt repository during every multi-architecture build.
+# Redis runs inside the container, so send logs to stdout instead of
+# trying to write a logfile that may not be writable on hosted platforms.
+RUN sed -i 's/^logfile .*/logfile ""/' /etc/redis/redis.conf
+
+# Node.js 24 from its official image.
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node-real
 
-# yt-dlp runs node with --permission (Node >= 23.5) for the EJS challenge, which
-# then needs explicit filesystem-read + child-process grants. We can't grant those
-# globally via NODE_OPTIONS because Playwright's node driver runs WITHOUT --permission
-# and would crash (`--allow-* requires --permission`). So a shim named `node`
-# (earlier on PATH) adds the grants only when --permission is present — i.e. only for
-# yt-dlp — and passes every other node call (Playwright, version probes) straight through.
+# Node permission shim for yt-dlp EJS.
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'case " $* " in' \
@@ -48,47 +44,35 @@ RUN printf '%s\n' \
     && chmod +x /usr/local/bin/node
 
 COPY requirements.txt .
+
 RUN pip install --upgrade pip && pip install -r requirements.txt
-# Keep yt-dlp at GitHub master — YouTube extraction breaks on stale PyPI releases.
-# This layer is cached by Docker's build cache, keyed on the RUN command's literal text.
-# YTDLP_REFRESH must actually appear in that text (the `echo` below) or changing it does
-# nothing — an ARG that's merely declared but never referenced in the RUN instruction does
-# NOT bust its cache. Bump YTDLP_REFRESH (e.g. --build-arg YTDLP_REFRESH=$(date +%s)) to
-# force a fresh pull; CI passes the commit SHA so every push gets current master.
+
+# Keep yt-dlp at GitHub master.
 ARG YTDLP_REFRESH=unset
+
 RUN echo "yt-dlp refresh token: ${YTDLP_REFRESH}" \
-    && pip install --force-reinstall "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"
+    && pip install --force-reinstall \
+    "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"
 
 RUN playwright install-deps chromium && playwright install chromium
-# Real Google Chrome (not open-source Chromium) is an amd64-only Playwright
-# download. DirecTV Stream's Akamai protection needs it on amd64 (see
-# app/scrapers/directv.py); arm64 retains the Chromium installed above because
-# Playwright has no Chrome-for-Linux-arm64 build to download.
+
+# Real Google Chrome is amd64-only.
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
         playwright install-deps chrome && playwright install chrome; \
     else \
         echo "Skipping unsupported Playwright Chrome download on $TARGETARCH"; \
     fi
-# Camoufox (anti-detect Firefox) for the interactive Sling sign-in - fetches its
-# own prebuilt browser binary; libgtk-3-0/xvfb above cover its runtime deps.
+
+# Camoufox for interactive Sling sign-in.
 RUN python -m camoufox fetch
 
 COPY . .
 
 RUN chmod +x /app/entrypoint.sh
 
-# Bundle the latest FastChannels Player release APK (app/fc_player/, a separate
-# Android project — not built here) into the image so the settings-page "Install"
-# flow (app/fc_player_bridge.py's install_app()/bundled_apk_path()) works with zero
-# network dependency at install-button-click time — the only network dependency is
-# here, at image-build time, same as everything else this Dockerfile already fetches.
-# Deliberately NOT committed to git (see project memory on release signing) — this
-# pulls the signed APK from its GitHub Release instead. A missing asset or temporary
-# fetch failure leaves the image usable and makes the install button report that no
-# APK was bundled, rather than breaking the whole image build. ARG cache-bust mirrors
-# YTDLP_REFRESH above — bump it to force re-pulling whatever the latest release
-# currently is, independent of any FastChannels code change landing in the same build.
+# Bundle the latest FastChannels Player release APK.
 ARG FC_PLAYER_APK_REFRESH=unset
+
 RUN echo "fc-player APK refresh token: ${FC_PLAYER_APK_REFRESH}" \
     && (curl -fsSL -o /app/fc_player_release.apk.tmp \
         "https://github.com/kineticman/FastChannels/releases/latest/download/FastChannelsPlayer.apk" \
@@ -97,14 +81,7 @@ RUN echo "fc-player APK refresh token: ${FC_PLAYER_APK_REFRESH}" \
         || (rm -f /app/fc_player_release.apk.tmp \
             && echo "FastChannels Player APK was not available — install button will report unavailable."))
 
-# Python's requests library defaults to its own bundled certifi CA store instead of the
-# system one, and certifi doesn't always trust the same chains the OS does — confirmed
-# live 2026-08-25: DirecTV's CDN cert (issued by "SSL Corporation / Cloudflare TLS
-# Issuing ECC CA 3", chaining to an older SHA1-signed root) verified fine via curl
-# (system store, ca-certificates package installed above) but failed with
-# SSLCertVerificationError via requests. Pointing requests at the system bundle fixes it
-# without disabling verification. Placed after the expensive install layers (apt/node/
-# pip/playwright/chrome) so bumping this doesn't bust their Docker build cache.
+# Use the system CA bundle for Python requests.
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
