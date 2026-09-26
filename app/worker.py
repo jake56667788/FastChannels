@@ -3187,7 +3187,6 @@ def _schedule_due_scrapes():
 def seed_sources():
     with flask_app.app_context():
         scrapers = registry.get_all()
-        default_disabled_sources = {'amazon_prime_free', 'aenetworks_tve', 'fox_tve', 'discovery_tve', 'amcn_tve', 'fox_one', 'nbc_tve', 'warner_tve', 'cspan', 'sling', 'localnow', 'pluto', 'frndlytv', 'fubo', 'hdhomerun', 'freecast', 'vidaa', 'philo', 'directv', 'pbs', 'tubi', 'spectrum'}
         # Custom Channels source: always seeded, always enabled, never auto-scraped
         if not Source.query.filter_by(name='custom').first():
             db.session.add(Source(
@@ -3212,7 +3211,7 @@ def seed_sources():
                     scrape_interval = cls.scrape_interval,
                     config          = {},
                     epg_only        = False,
-                    is_enabled      = canonical_name not in default_disabled_sources,
+                    is_enabled      = False,
                 ))
         # Reset legacy flags so upgrading users do not get stuck with sources
         # silently excluded from M3U output after the UI toggle is removed.
