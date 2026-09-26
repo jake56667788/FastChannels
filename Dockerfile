@@ -8,7 +8,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Set automatically by Buildx for each target platform.
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,17 +24,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     android-tools-adb \
     && rm -rf /var/lib/apt/lists/*
 
-# Create FastChannels persistent data directories while the image is still
-# being built as root. Blitz runs the container as a non-root user at runtime.
+# Create FastChannels persistent directories while building as root.
+# Blitz runs the container as a non-root user at runtime.
 RUN mkdir -p /data /root/.android \
     && chmod 0777 /data \
     && chmod 0777 /root/.android
 
-# Node.js 24 from its official image.
+# Node.js 24 from the official Node image.
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node-real
 
-# yt-dlp runs node with --permission for the EJS challenge.
-# Add the required permissions only when --permission is actually requested.
+# yt-dlp may invoke node with --permission.
+# Add the required permissions only when --permission is requested.
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'case " $* " in' \
@@ -46,7 +45,7 @@ RUN printf '%s\n' \
     > /usr/local/bin/node \
     && chmod +x /usr/local/bin/node
 
-COPY requirements.txt .
+COPY requirements.txt /app/
 
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
@@ -73,10 +72,11 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 RUN python -m camoufox fetch
 
 # Disable Redis file logging in the system configuration.
-# entrypoint.sh also explicitly passes --logfile "".
+# entrypoint.sh explicitly passes --logfile "" too.
 RUN sed -i 's/^logfile .*/logfile ""/' /etc/redis/redis.conf
 
-COPY .
+# Copy the FastChannels application.
+COPY . /app/
 
 RUN chmod +x /app/entrypoint.sh
 
@@ -97,5 +97,5 @@ ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 5523
+
 ENTRYPOINT ["/app/entrypoint.sh"]
-```
