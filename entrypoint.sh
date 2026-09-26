@@ -1,12 +1,12 @@
-```bash
 #!/bin/bash
 set -e
 
 echo "🚀 Starting FastChannels..."
 
-# Start Redis.
-# FastChannels disables Redis persistence, so Redis does not need to write
-# anything under /data. Use /tmp, which is writable by the runtime user.
+# ------------------------------------------------------------
+# Redis
+# ------------------------------------------------------------
+
 REDIS_DIR="/tmp/redis"
 mkdir -p "$REDIS_DIR"
 
@@ -21,7 +21,6 @@ redis-server \
 
 echo "✅ Redis started"
 
-# Wait for Redis to be ready before proceeding.
 echo "⏳ Waiting for Redis..."
 
 for i in $(seq 1 30); do
@@ -38,8 +37,9 @@ for i in $(seq 1 30); do
     sleep 0.5
 done
 
-# /data is created and made writable by the Dockerfile.
-# Do not mkdir /data here because Blitz runs the container as a non-root user.
+# ------------------------------------------------------------
+# Persistent data
+# ------------------------------------------------------------
 
 if [ ! -d /data ]; then
     echo "❌ /data does not exist"
@@ -54,11 +54,12 @@ fi
 
 echo "✅ /data is writable"
 
-# One-time cleanup: the legacy watch-M3U output was replaced by the PrismCast
-# hybrid feed, so its artifacts are no longer generated.
 rm -f /data/cache/xml/*watch-m3u.m3u 2>/dev/null || true
 
-# Create DB tables and run schema migrations before worker/gunicorn start.
+# ------------------------------------------------------------
+# Database initialization
+# ------------------------------------------------------------
+
 cd /app
 
 python -c "from app import create_app; app = create_app()"
@@ -69,21 +70,21 @@ export FC_SCHEMA_READY=1
 
 echo "✅ DB ready"
 
-# Seed sources.
 python -c "from app.worker import seed_sources; seed_sources()" || true
 
 echo "✅ Sources seeded"
 
-# Force-purge any source whose scraper class has been missing from the registry
-# for longer than its grace period.
 python -c "from app.worker import purge_orphaned_sources; purge_orphaned_sources()" || true
 
 echo "✅ Orphaned sources checked"
 
-# Sweep up channels/programs left behind by a disable whose purge job never ran.
 python -c "from app.worker import purge_disabled_source_leftovers; purge_disabled_source_leftovers()" || true
 
 echo "✅ Disabled-source leftovers checked"
+
+# ------------------------------------------------------------
+# Network readiness
+# ------------------------------------------------------------
 
 wait_for_network() {
     echo "⏳ Waiting for outbound network and DNS..."
@@ -108,8 +109,8 @@ try:
             type=socket.SOCK_STREAM
         )
 
-        last_error = None
         connected = False
+        last_error = None
 
         for family, socktype, proto, _, sockaddr in infos:
             try:
@@ -153,25 +154,29 @@ PY
 
 wait_for_network
 
-# Start isolated worker roles with watchdogs.
+# ------------------------------------------------------------
+# Workers
+# ------------------------------------------------------------
 #
-# scheduler    = periodic scheduling and maintenance
-# scraper      = scraping and stream audits
-# fast         = immediate short-lived jobs
-# maintenance  = heavier non-urgent background work
+# Memory-saving layout:
+#
+#   1 scheduler process
+#   1 fast RQ process
+#   1 combined scraper + maintenance RQ process
+#   1 Gunicorn process with 1 worker
+#
+# The old configuration used separate Python processes for scraper
+# and maintenance. Both import the entire FastChannels application,
+# so combining their RQ queues saves a substantial amount of RAM.
+# ------------------------------------------------------------
 
 (
     while true; do
         FC_WORKER_ROLE=scheduler python -m app.worker
-        echo "⚠ Scheduler worker exited (code $?) — restarting in 5s"
-        sleep 5
-    done
-) &
+        EXIT_CODE=$?
 
-(
-    while true; do
-        FC_WORKER_ROLE=scraper python -m app.worker
-        echo "⚠ Scraper worker exited (code $?) — restarting in 5s"
+        echo "⚠ Scheduler worker exited (code $EXIT_CODE) — restarting in 5s"
+
         sleep 5
     done
 ) &
@@ -179,27 +184,43 @@ wait_for_network
 (
     while true; do
         FC_WORKER_ROLE=fast python -m app.worker
-        echo "⚠ Fast worker exited (code $?) — restarting in 5s"
+        EXIT_CODE=$?
+
+        echo "⚠ Fast worker exited (code $EXIT_CODE) — restarting in 5s"
+
         sleep 5
     done
 ) &
 
 (
     while true; do
-        FC_WORKER_ROLE=maintenance python -m app.worker
-        echo "⚠ Maintenance worker exited (code $?) — restarting in 5s"
+        FC_WORKER_ROLE=background python -m app.worker
+        EXIT_CODE=$?
+
+        echo "⚠ Background worker exited (code $EXIT_CODE) — restarting in 5s"
+
         sleep 5
     done
 ) &
 
-echo "✅ Worker roles started (scheduler, scraper, fast, maintenance)"
+echo "✅ Worker roles started (scheduler, fast, combined scraper+maintenance)"
 
-GUNICORN_WORKERS="${GUNICORN_WORKERS:-2}"
+# ------------------------------------------------------------
+# Gunicorn
+# ------------------------------------------------------------
+
+# One Gunicorn worker avoids loading another complete Flask application.
+GUNICORN_WORKERS="${GUNICORN_WORKERS:-1}"
+
 GUNICORN_MAX_REQUESTS="${GUNICORN_MAX_REQUESTS:-250}"
+
 GUNICORN_MAX_REQUESTS_JITTER="${GUNICORN_MAX_REQUESTS_JITTER:-50}"
+
 GUNICORN_PRELOAD="${GUNICORN_PRELOAD:-1}"
 
 echo "✅ Starting gunicorn on port 5523"
+echo "   workers=$GUNICORN_WORKERS"
+echo "   preload=$GUNICORN_PRELOAD"
 
 exec gunicorn \
     --config /app/gunicorn.conf.py \
@@ -219,4 +240,3 @@ exec gunicorn \
         [ "$GUNICORN_PRELOAD" = "1" ] && printf '%s' "--preload"
     ) \
     "wsgi:app"
-```
