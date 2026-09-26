@@ -55,6 +55,19 @@ RUN echo "yt-dlp refresh token: ${YTDLP_REFRESH}" \
     && pip install --force-reinstall \
         "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"
 
+# Keep HOME/USER pinned to root explicitly for the browser install steps
+# below. Playwright's own install-deps root check (transformCommandsForRoot
+# in its JS driver) is based on process.getuid() === 0, not on HOME/USER —
+# verified directly against the installed playwright package — so this does
+# not itself change that logic. It's kept here as a defensive, harmless pin.
+# No separate user is ever created in this Dockerfile, no
+# PLAYWRIGHT_BROWSERS_PATH override points at a non-root directory, and no
+# USER directive switches away from root at any point, so root stays root
+# end to end and install-deps' direct (non-su, non-sudo) code path is what
+# actually runs.
+ENV HOME=/root \
+    USER=root
+
 RUN playwright install-deps chromium \
     && playwright install chromium
 
@@ -68,6 +81,12 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 
 # Camoufox for interactive Sling sign-in.
 RUN python -m camoufox fetch
+
+# Browser dependencies/binaries above were installed while running as root
+# during this build. The container also runs as root at runtime (no USER
+# directive switches to another user anywhere in this Dockerfile), so no
+# additional ownership or permission changes are needed for FastChannels to
+# read/execute the installed browsers and their cache directories.
 
 # Disable Redis file logging.
 RUN sed -i 's/^logfile .*/logfile ""/' /etc/redis/redis.conf
