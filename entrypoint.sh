@@ -3,8 +3,10 @@ set -e
 
 echo "🚀 Starting FastChannels..."
 
-# Start Redis using paths writable by the non-root application user.
-REDIS_DIR="/data/redis"
+# Start Redis.
+# FastChannels disables Redis persistence, so Redis does not need to write
+# anything under /data. Use /tmp, which is writable by the runtime user.
+REDIS_DIR="/tmp/redis"
 mkdir -p "$REDIS_DIR"
 
 redis-server \
