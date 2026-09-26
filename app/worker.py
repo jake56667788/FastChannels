@@ -4183,6 +4183,30 @@ if __name__ == '__main__':
             logger.info('Scraper worker listening on queue: scraper')
             worker.work(logging_level=logging.WARNING)
 
+    def _run_background_worker():
+        """
+        Low-memory worker handling both scraper and maintenance queues.
+
+        Both queues use the same FastChannels application process instead of
+        starting two separate Python interpreters with duplicated application
+        memory.
+        """
+        r = redis.from_url(flask_app.config['REDIS_URL'])
+
+        with Connection(r):
+            worker = Worker(
+                queues=[
+                    Queue('scraper', connection=r),
+                    Queue('maintenance', connection=r),
+                ]
+            )
+
+            logger.info(
+                'Background worker listening on queues: scraper, maintenance'
+            )
+
+            worker.work(logging_level=logging.WARNING)
+
     if role == 'scheduler':
         try:
             _run_scheduler()
@@ -4205,6 +4229,8 @@ if __name__ == '__main__':
         _run_maintenance_worker()
     elif role == 'scraper':
         _run_scraper_worker()
+    elif role == 'background':
+        _run_background_worker()
     else:
         logger.error('Unknown FC_WORKER_ROLE=%r', role)
         sys.exit(2)
